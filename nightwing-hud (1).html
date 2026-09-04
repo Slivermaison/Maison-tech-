@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NW HUD">
+<meta name="theme-color" content="#050914">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' fill='%23050914'/%3E%3Ccircle cx='50' cy='50' r='34' fill='none' stroke='%233d8bff' stroke-width='4'/%3E%3Cpath d='M50 20v20M50 60v20M20 50h20M60 50h20' stroke='%233d8bff' stroke-width='4'/%3E%3C/svg%3E">
+<title>NW SUIT HUD</title>
+<!--
+  INSTALL AS A STANDALONE APP (runs full-screen, no browser chrome, no CodePen iframe):
+  1. Save this file, host it anywhere (or just open it directly in Safari on iPhone).
+  2. In Safari: Share → Add to Home Screen.
+  3. Launch from the Home Screen icon — it now runs detached from Safari/CodePen.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js" crossorigin="anonymous"></script>
+<style>
+  :root{
+    --void:#050914;
+    --panel-bg: rgba(8,16,34,0.62);
+    --blue:#3d8bff;
+    --blue-dim:#1b3a75;
+    --blue-glow: rgba(61,139,255,0.55);
+    --red:#ff3b52;
+    --red-dim:#7a1c28;
+    --white:#eaf1ff;
+    --cyan:#6fe0ff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent;}
+  html,body{width:100%; height:100%; overflow:hidden; background:var(--void); font-family:'Segoe UI',system-ui,sans-serif; color:var(--white); user-select:none;}
+  #app{position:fixed; inset:0;}
+
+  #hudCanvas{position:absolute; inset:0; width:100%; height:100%; background:var(--void);}
+  video{display:none;}
+
+  #vignette{position:absolute; inset:0; pointer-events:none;
+    background:radial-gradient(ellipse at center, transparent 50%, rgba(2,4,10,0.65) 100%);}
+  #scanlines{position:absolute; inset:0; pointer-events:none; mix-blend-mode:overlay;
+    background:repeating-linear-gradient(to bottom, rgba(61,139,255,0.05) 0px, rgba(61,139,255,0.05) 1px, transparent 1px, transparent 3px);}
+  #flash{position:absolute; inset:0; background:#fff; opacity:0; pointer-events:none; transition:opacity 0.08s ease;}
+  #flash.on{opacity:1;}
+  #recDot{position:absolute; top:56px; right:20px; display:none; align-items:center; gap:6px; color:var(--red); font-size:11px; letter-spacing:2px; font-family:'Consolas',monospace;}
+  #recDot.on{display:flex;}
+  #recDot .d{width:8px; height:8px; border-radius:50%; background:var(--red); animation:pulse 1s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:0.2;}}
+
+  .hud-layer{position:absolute; inset:0; pointer-events:none; transition:opacity 0.35s ease;}
+  .hud-layer.blackout{opacity:0.03;}
+
+  .bracket{position:absolute; width:30px; height:30px; border-color:var(--blue); border-style:solid; opacity:0.9;}
+  .bracket.tl{top:14px; left:14px; border-width:2px 0 0 2px;}
+  .bracket.tr{top:14px; right:14px; border-width:2px 2px 0 0;}
+  .bracket.bl{bottom:14px; left:14px; border-width:0 0 2px 2px;}
+  .bracket.br{bottom:14px; right:14px; border-width:0 2px 2px 0;}
+
+  #reticle{position:absolute; top:50%; left:50%; width:56px; height:56px; transform:translate(-50%,-50%); opacity:0.6;}
+  #reticle svg{width:100%; height:100%;}
+
+  .panel{position:absolute; font-family:'Consolas',monospace; font-size:11px; line-height:1.6; letter-spacing:0.4px; color:var(--blue); text-shadow:0 0 6px var(--blue-glow);
+    opacity:1; transition:opacity 0.6s ease;}
+  .panel .lbl{color:var(--blue-dim);}
+  .panel .val{color:var(--white);}
+  .panel .val.red{color:var(--red);}
+  .panel .val.cyan{color:var(--cyan);}
+  .panel.dim{opacity:0.28;}
+  .panel.hot{opacity:1;}
+  #zoomBadge{transition:opacity 0.6s ease;}
+  #zoomBadge.dim{opacity:0.25;}
+  #panel-bc{transition:opacity 0.5s ease;}
+  #panel-bc.dim{opacity:0;}
+
+  #panel-tl{top:54px; left:18px;}
+  #panel-tr{top:54px; right:18px; text-align:right;}
+  #panel-bl{bottom:190px; left:18px;}
+  #panel-br{bottom:190px; right:18px; text-align:right;}
+  #panel-bc{bottom:190px; left:50%; transform:translateX(-50%); text-align:center;}
+
+  #mode-badge{position:absolute; top:14px; left:50%; transform:translateX(-50%);
+    font-size:11px; letter-spacing:3px; color:var(--blue); font-family:'Consolas',monospace;
+    border:1px solid var(--blue-dim); padding:4px 14px; border-radius:2px; background:var(--panel-bg);}
+  #mode-badge .dot{display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--red); margin-right:8px; vertical-align:1px; animation:pulse 1.4s infinite;}
+
+  #zoomBadge{position:absolute; bottom:190px; left:50%; transform:translate(-50%, 30px);
+    font-size:11px; color:var(--cyan); font-family:'Consolas',monospace; opacity:0.85;}
+
+  #alertBanner{position:absolute; top:90px; left:50%; transform:translate(-50%,-10px);
+    background:rgba(122,28,40,0.85); border:1px solid var(--red); color:#fff; padding:6px 16px;
+    font-size:12px; letter-spacing:2px; border-radius:2px; opacity:0; transition:all 0.25s ease; pointer-events:none;}
+  #alertBanner.show{opacity:1; transform:translate(-50%,0);}
+
+  #dock{position:absolute; bottom:0; left:0; right:0; padding:10px 14px calc(10px + env(safe-area-inset-bottom));
+    background:linear-gradient(to top, rgba(3,6,14,0.95), rgba(3,6,14,0)); pointer-events:auto;}
+  #feed{position:absolute; bottom:64px; left:14px; right:14px; display:flex; flex-direction:column-reverse; gap:3px;
+    pointer-events:none; max-height:118px; overflow:hidden;}
+  .feed-line{font-size:11px; color:var(--blue); opacity:0; transform:translateY(6px); animation:feedIn 0.25s ease forwards;
+    text-shadow:0 0 4px var(--blue-glow); font-family:'Consolas',monospace;}
+  .feed-line.sys{color:var(--cyan);}
+  .feed-line.err{color:var(--red);}
+  @keyframes feedIn{to{opacity:0.9; transform:translateY(0);}}
+
+  #dockRow{display:flex; align-items:center; gap:8px; border:1px solid var(--blue-dim); background:var(--panel-bg);
+    border-radius:6px; padding:8px 10px;}
+  #cmdInput{flex:1; background:transparent; border:none; outline:none; color:var(--white); font-size:14px; font-family:'Consolas',monospace;}
+  #cmdInput::placeholder{color:var(--blue-dim);}
+  .dock-btn{background:transparent; border:1px solid var(--blue-dim); color:var(--blue); width:34px; height:34px;
+    border-radius:5px; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center; flex-shrink:0;
+    transition:background 0.15s ease, color 0.15s ease;}
+  .dock-btn:active{background:var(--blue); color:var(--void);}
+  .dock-btn.recording{background:var(--red); border-color:var(--red); color:var(--void); animation:pulse 1s infinite;}
+  #quickRow{display:flex; gap:6px; margin-bottom:8px; overflow-x:auto; pointer-events:auto;}
+  .quick{flex-shrink:0; font-size:10px; letter-spacing:1px; color:var(--blue); border:1px solid var(--blue-dim);
+    background:var(--panel-bg); padding:5px 10px; border-radius:12px; white-space:nowrap;}
+
+  #permGate{position:absolute; inset:0; background:var(--void); z-index:50; display:flex; align-items:center;
+    justify-content:center; flex-direction:column; gap:16px; padding:24px; text-align:center;}
+  #permGate h1{font-weight:700; letter-spacing:5px; color:var(--blue); font-size:22px; text-shadow:0 0 12px var(--blue-glow);}
+  #permGate h1 span{color:var(--red);}
+  #permGate p{color:#7ea3e0; font-size:13px; max-width:340px; line-height:1.6;}
+  #permGate button{background:transparent; border:1px solid var(--blue); color:var(--blue); padding:12px 28px;
+    font-size:13px; letter-spacing:2px; border-radius:4px; cursor:pointer; font-family:'Consolas',monospace;}
+  #permGate button:active{background:var(--blue); color:var(--void);}
+  #permGate.hidden{display:none;}
+</style>
+</head>
+<body>
+<div id="app">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="hudCanvas"></canvas>
+  <div id="scanlines"></div>
+  <div id="vignette"></div>
+  <div id="flash"></div>
+  <div id="recDot"><span class="d"></span>REC</div>
+
+  <div class="hud-layer" id="hudLayer">
+    <div class="bracket tl"></div><div class="bracket tr"></div>
+    <div class="bracket bl"></div><div class="bracket br"></div>
+
+    <div id="mode-badge"><span class="dot"></span><span id="modeText">PATROL MODE</span></div>
+    <div id="alertBanner" id="alertBanner">IMPACT DETECTED</div>
+
+    <div id="reticle">
+      <svg viewBox="0 0 56 56">
+        <circle cx="28" cy="28" r="18" fill="none" stroke="#3d8bff" stroke-width="1" opacity="0.6"/>
+        <line x1="28" y1="2" x2="28" y2="14" stroke="#3d8bff" stroke-width="1.5"/>
+        <line x1="28" y1="42" x2="28" y2="54" stroke="#3d8bff" stroke-width="1.5"/>
+        <line x1="2" y1="28" x2="14" y2="28" stroke="#3d8bff" stroke-width="1.5"/>
+        <line x1="42" y1="28" x2="54" y2="28" stroke="#3d8bff" stroke-width="1.5"/>
+      </svg>
+    </div>
+
+    <div class="panel" id="panel-tl">
+      <div><span class="lbl">TIME </span><span class="val" id="clockVal">--:--:--</span></div>
+      <div><span class="lbl">DATE </span><span class="val" id="dateVal">----.--.--</span></div>
+      <div><span class="lbl">HDG&nbsp; </span><span class="val cyan" id="hdgVal">--°</span></div>
+    </div>
+
+    <div class="panel dim" id="panel-tr">
+      <div><span class="val cyan" id="tempVal">-- °C</span><span class="lbl"> TEMP</span></div>
+      <div><span class="val" id="windVal">-- km/h</span><span class="lbl"> WIND</span></div>
+      <div><span class="lbl">SKY </span><span class="val" id="skyVal">--</span></div>
+    </div>
+
+    <div class="panel dim" id="panel-bl">
+      <div><span class="lbl">LAT </span><span class="val" id="latVal">--.------</span></div>
+      <div><span class="lbl">LON </span><span class="val" id="lonVal">--.------</span></div>
+      <div><span class="lbl">WPT </span><span class="val cyan" id="wptVal">none set</span></div>
+    </div>
+
+    <div class="panel dim" id="panel-br">
+      <div><span class="lbl">BATT </span><span class="val" id="battVal">--%</span></div>
+      <div><span class="lbl">NET&nbsp; </span><span class="val" id="netVal">--</span></div>
+      <div><span class="lbl">CLK&nbsp; </span><span class="val cyan" id="timerVal">00:00</span></div>
+    </div>
+
+    <div class="panel dim" id="panel-bc">
+      <span class="lbl">TARGET </span><span class="val" id="lockVal">none</span>
+    </div>
+
+    <div class="panel dim" id="panel-astro" style="top:120px; left:50%; transform:translateX(-50%); text-align:center; display:none;">
+      <div><span class="lbl">SUN </span><span class="val cyan" id="sunVal">--</span></div>
+      <div><span class="lbl">MOON </span><span class="val" id="moonVal">--</span></div>
+      <div><span class="lbl">ISS </span><span class="val cyan" id="issVal">-- </span></div>
+    </div>
+
+    <div id="zoomBadge" class="dim">ZOOM 1.0x</div>
+  </div>
+
+  <div id="feed"></div>
+
+  <div id="dock">
+    <div id="quickRow">
+      <div class="quick">zoom in</div><div class="quick">scan mode</div><div class="quick">night vision</div>
+      <div class="quick">what do you see</div><div class="quick">torch</div><div class="quick">stealth</div>
+      <div class="quick">mark this spot</div><div class="quick">start timer 60</div><div class="quick">capture</div>
+      <div class="quick">astro mode</div><div class="quick">red alert</div><div class="quick">deep analysis</div>
+    </div>
+    <div id="dockRow">
+      <button class="dock-btn" id="micBtn" title="Voice command">●</button>
+      <input id="cmdInput" type="text" placeholder="Type any command… try natural phrasing" autocomplete="off">
+      <button class="dock-btn" id="sendBtn" title="Send">➤</button>
+    </div>
+  </div>
+
+  <div id="permGate">
+    <h1>NIGHT<span>WING</span> HUD</h1>
+    <p>Requires rear camera, location, and motion sensor access to run live suit telemetry. Grant access to boot the system.</p>
+    <button id="initBtn">BOOT SUIT SYSTEM</button>
+    <p id="gateStatus" style="min-height:16px; color:#7ea3e0; font-size:12px;"></p>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+// ================= STATE =================
+const state = {
+  stream:null, track:null,
+  torchOn:false, torchSupported:false,
+  zoomLevel:1, zoomMin:1, zoomMax:5, hwZoom:false, zoomCaps:null,
+  stealth:false,
+  mode:'patrol', // patrol | scan
+  nightVision:false, nightAuto:true,
+  lastGesture:0, gestureCooldownMs:1800,
+  pos:null, weather:null,
+  waypoints:{}, activeWaypoint:null,
+  detections:[], lockedClass:null, lockedBox:null,
+  cover:{ratio:1,nx:0,ny:0,vw:0,vh:0},
+  timer:{mode:null, running:false, startTs:0, elapsed:0, countdownTotal:0},
+  recognizing:false,
+  recorder:null, recording:false, chunks:[],
+  lastFrameBrightnessCheck:0,
+  theme:'blue',
+  astro:false, issTimer:null,
+  knownTag:null, // {class, name}
+  seenClasses:{}, // class -> last-seen timestamp, for quiet "new contact" tagging
+  briefed:false
+};
+
+// ---- CONFIG: fill this in yourself if you want "deep analysis" to call a real model.
+// Left blank on purpose — no key ships in this file. Without one, deep analysis
+// gracefully falls back to the offline scene description.
+const AI_CONFIG = { endpoint:'', apiKey:'' };
+
+// ---- companion voice lines: small pools so it doesn't repeat itself like a machine
+const LINES = {
+  boot: ["Suit system online.", "Systems nominal. I'm with you.", "All green. Let's move."],
+  lowBattery: ["Heads up — power's getting thin.", "Suit's running low on juice, might want to plan around that."],
+  netBack: ["Back online.", "Signal's back."],
+  netLost: ["Lost the signal — going local-only for now.", "We're offline. I'll manage without it."],
+  newContact: n=>[`New contact — ${n} in frame.`, `Got a ${n} in view.`, `Picking up a ${n}.`],
+  noAI: ["Deep analysis needs a live connection and a configured key — I don't have either right now, so here's what I can tell you locally instead.",
+         "Can't reach a deeper model from here — running the offline read instead."]
+};
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+const $ = id => document.getElementById(id);
+const video = $('video');
+const hud = $('hudCanvas');
+const ctx = hud.getContext('2d', { willReadFrequently:true });
+const feed = $('feed');
+
+function resize(){ hud.width = innerWidth; hud.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+function log(msg, cls){
+  const l = document.createElement('div');
+  l.className = 'feed-line' + (cls?' '+cls:'');
+  l.textContent = msg;
+  feed.appendChild(l);
+  while(feed.children.length > 6) feed.removeChild(feed.firstChild);
+}
+
+function speak(text){
+  try{
+    if(!('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.05; u.pitch = 0.95;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  }catch(e){}
+}
+
+function flashAlert(text){
+  const b = $('alertBanner');
+  b.textContent = text;
+  b.classList.add('show');
+  setTimeout(()=>b.classList.remove('show'), 2200);
+}
+
+// ================= THEME ENGINE =================
+// Three color identities on one underlying layout, swapped by CSS custom properties.
+const THEMES = {
+  blue:  { blue:'#3d8bff', dim:'#1b3a75', glow:'rgba(61,139,255,0.55)', cyan:'#6fe0ff' },
+  red:   { blue:'#ff3b52', dim:'#7a1c28', glow:'rgba(255,59,82,0.55)',  cyan:'#ff8f9c' },
+  green: { blue:'#3dffa0', dim:'#155c3d', glow:'rgba(61,255,160,0.45)', cyan:'#a8ffcf' }
+};
+function applyTheme(name){
+  const t = THEMES[name] || THEMES.blue;
+  const r = document.documentElement.style;
+  r.setProperty('--blue', t.blue); r.setProperty('--blue-dim', t.dim);
+  r.setProperty('--blue-glow', t.glow); r.setProperty('--cyan', t.cyan);
+  state.theme = name;
+}
+let redAlertTimeout = null;
+function redAlert(ms){
+  applyTheme('red');
+  flashAlert('RED ALERT');
+  log('Red alert — all systems flagged.', 'err'); speak('Red alert');
+  clearTimeout(redAlertTimeout);
+  redAlertTimeout = setTimeout(()=> applyTheme(state.stealth ? 'green' : 'blue'), ms || 5000);
+}
+
+// ================= RELEVANCE ENGINE (smart declutter) =================
+// Panels default dim; something making them relevant wakes them up for a
+// while, then they settle back down instead of shouting data at you nonstop.
+const relevanceTimers = {};
+function stickyReasons(id){
+  if(id === 'panel-bc') return !!state.lockedClass;
+  if(id === 'panel-br') return state.timer.running || isLowBattery();
+  if(id === 'panel-bl') return !!state.activeWaypoint && lastWaypointDist != null && lastWaypointDist < 60;
+  if(id === 'panel-tr') return isSevereWeather();
+  return false;
+}
+function wake(id, ms){
+  const el = $(id); if(!el) return;
+  el.classList.remove('dim'); el.classList.add('hot');
+  clearTimeout(relevanceTimers[id]);
+  relevanceTimers[id] = setTimeout(()=>{
+    if(!stickyReasons(id)){ el.classList.add('dim'); el.classList.remove('hot'); }
+  }, ms || 5000);
+}
+function isLowBattery(){ const t=$('battVal').textContent; const n=parseInt(t); return !isNaN(n) && n<=20; }
+function isSevereWeather(){ const s=$('skyVal').textContent||''; return /RAIN|STORM|SNOW/.test(s); }
+setInterval(()=>{ // periodic re-check for sticky states so they don't dim while still relevant
+  ['panel-bc','panel-br','panel-bl','panel-tr'].forEach(id=>{
+    if(stickyReasons(id)){ const el=$(id); el.classList.remove('dim'); el.classList.add('hot'); }
+  });
+}, 3000);
+
+// ================= CAMERA =================
+async function initCamera(){
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    log('Camera API unavailable in this context.', 'err'); return null;
+  }
+  try{
+    const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ exact:'environment' } }, audio:false });
+    log('Rear optic locked (exact constraint).', 'sys'); return s;
+  }catch(e1){
+    try{
+      const s = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'environment' }, audio:false });
+      log('Rear optic locked (fallback constraint).', 'sys'); return s;
+    }catch(e2){
+      log('Camera access failed: ' + e2.message, 'err'); return null;
+    }
+  }
+}
+
+function drawFrame(){
+  if(video.readyState < 2) return;
+  const vw = video.videoWidth, vh = video.videoHeight;
+  if(!vw || !vh) return;
+  const cw = hud.width, ch = hud.height;
+
+  // digital zoom via source crop (skipped if hardware zoom active)
+  let sx=0, sy=0, sw=vw, sh=vh;
+  if(!state.hwZoom && state.zoomLevel > 1){
+    sw = vw / state.zoomLevel; sh = vh / state.zoomLevel;
+    sx = (vw - sw)/2; sy = (vh - sh)/2;
+  }
+  const hRatio = cw / sw, vRatio = ch / sh;
+  const ratio = Math.max(hRatio, vRatio);
+  const nw = sw*ratio, nh = sh*ratio;
+  const nx = (cw-nw)/2, ny = (ch-nh)/2;
+  state.cover = { ratio, nx, ny, sx, sy, sw, sh, vw, vh };
+
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,cw,ch);
+
+  // filters: night vision / scan mode
+  let filter = 'none';
+  if(state.nightVision) filter = 'brightness(1.6) contrast(1.25) saturate(0.7) hue-rotate(190deg)';
+  else if(state.mode === 'scan') filter = 'contrast(1.5) saturate(0.15) brightness(1.05)';
+  ctx.filter = filter;
+  ctx.drawImage(video, sx, sy, sw, sh, nx, ny, nw, nh);
+  ctx.filter = 'none';
+
+  if(state.mode === 'scan'){
+    ctx.strokeStyle = 'rgba(61,139,255,0.25)';
+    ctx.lineWidth = 1;
+    for(let x=0; x<cw; x+=40){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,ch); ctx.stroke(); }
+    for(let y=0; y<ch; y+=40){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(cw,y); ctx.stroke(); }
+  }
+
+  drawDetections();
+  maybeAutoNightVision();
+}
+
+function mapBox(b){
+  // b: [x,y,width,height] in cropped-source pixel space
+  const c = state.cover;
+  const relX = (b[0]-c.sx) * c.ratio + c.nx;
+  const relY = (b[1]-c.sy) * c.ratio + c.ny;
+  return [relX, relY, b[2]*c.ratio, b[3]*c.ratio];
+}
+
+const CATEGORY_COLOR = {
+  person:'#3d8bff', car:'#ff3b52', truck:'#ff3b52', bicycle:'#6fe0ff',
+  cell_phone:'#6fe0ff', laptop:'#6fe0ff', cup:'#8fffb0', bottle:'#8fffb0',
+  dog:'#ffcf5c', cat:'#ffcf5c', chair:'#c98cff', backpack:'#c98cff'
+};
+function colorFor(cls){ return CATEGORY_COLOR[cls.replace(/\s/g,'_')] || '#3d8bff'; }
+
+function drawDetections(){
+  if(!state.detections.length) return;
+  ctx.font = '11px Consolas, monospace';
+  state.detections.forEach(d=>{
+    const [x,y,w,h] = mapBox(d.bbox);
+    const isLock = state.lockedClass && d.class === state.lockedClass && d === state.lockedBox;
+    const col = isLock ? '#ff3b52' : colorFor(d.class);
+    ctx.strokeStyle = col; ctx.lineWidth = isLock ? 2.5 : 1.4;
+    ctx.strokeRect(x,y,w,h);
+    const tagged = isLock && state.knownTag && state.knownTag.class === d.class;
+    const label = tagged ? `${state.knownTag.name} ${Math.round(d.score*100)}%` : `${d.class} ${Math.round(d.score*100)}%`;
+    const tw = ctx.measureText(label).width + 8;
+    ctx.fillStyle = col; ctx.globalAlpha = 0.85;
+    ctx.fillRect(x, y-16, tw, 16);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#050914';
+    ctx.fillText(label, x+4, y-4);
+    // corner ticks
+    const t=6;
+    ctx.beginPath();
+    ctx.moveTo(x,y+t); ctx.lineTo(x,y); ctx.lineTo(x+t,y);
+    ctx.moveTo(x+w-t,y); ctx.lineTo(x+w,y); ctx.lineTo(x+w,y+t);
+    ctx.moveTo(x,y+h-t); ctx.lineTo(x,y+h); ctx.lineTo(x+t,y+h);
+    ctx.moveTo(x+w-t,y+h); ctx.lineTo(x+w,y+h); ctx.lineTo(x+w,y+h-t);
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
+  });
+}
+
+function loopDraw(){ drawFrame(); requestAnimationFrame(loopDraw); }
+
+// ---- night-vision auto trigger from average brightness ----
+function maybeAutoNightVision(){
+  if(!state.nightAuto || state.nightVision) return;
+  const now = Date.now();
+  if(now - state.lastFrameBrightnessCheck < 2500) return;
+  state.lastFrameBrightnessCheck = now;
+  try{
+    const sample = ctx.getImageData(hud.width/2-20, hud.height/2-20, 40, 40).data;
+    let sum=0, n=0;
+    for(let i=0;i<sample.length;i+=16){ sum += (sample[i]+sample[i+1]+sample[i+2])/3; n++; }
+    const avg = sum/n;
+    if(avg < 40){
+      state.nightVision = true;
+      log('Low light detected — night vision auto-engaged.', 'sys');
+    }
+  }catch(e){ /* cross-origin or not ready */ }
+}
+
+// ---- zoom ----
+async function setZoom(target){
+  target = Math.max(state.zoomMin, Math.min(state.zoomMax, target));
+  state.zoomLevel = target;
+  if(state.hwZoom && state.track){
+    try{
+      await state.track.applyConstraints({ advanced:[{ zoom: Math.max(state.zoomCaps.min, Math.min(state.zoomCaps.max, target)) }] });
+    }catch(e){ state.hwZoom = false; }
+  }
+  $('zoomBadge').textContent = 'ZOOM ' + target.toFixed(1) + 'x' + (state.hwZoom?' (HW)':'');
+  wake('zoomBadge', 3000);
+}
+function zoomIn(step){ setZoom(state.zoomLevel + (step||0.5)); log('Zoom in → ' + state.zoomLevel.toFixed(1) + 'x', 'sys'); }
+function zoomOut(step){ setZoom(state.zoomLevel - (step||0.5)); log('Zoom out → ' + state.zoomLevel.toFixed(1) + 'x', 'sys'); }
+
+// ---- torch ----
+async function toggleTorch(){
+  if(state.track && state.torchSupported){
+    try{
+      state.torchOn = !state.torchOn;
+      await state.track.applyConstraints({ advanced:[{ torch: state.torchOn }] });
+      log('Torch ' + (state.torchOn?'ON':'OFF'), 'sys'); speak(state.torchOn?'Torch on':'Torch off');
+      return;
+    }catch(e){ log('Hardware torch failed, using flash overlay.', 'err'); }
+  }
+  const f = $('flash'); f.classList.add('on'); setTimeout(()=>f.classList.remove('on'), 220);
+  log('Flash overlay triggered.', 'sys'); speak('Flash triggered');
+}
+
+// ================= GEO + WEATHER + COMPASS =================
+function fmt(n){ return (n>=0?'+':'') + n.toFixed(6); }
+const WEATHER_CODES = {0:'CLEAR',1:'MOSTLY CLEAR',2:'PARTLY CLOUD',3:'OVERCAST',45:'FOG',48:'RIME FOG',
+  51:'DRIZZLE',61:'RAIN',63:'RAIN',65:'HEAVY RAIN',71:'SNOW',73:'SNOW',75:'HEAVY SNOW',80:'SHOWERS',95:'STORM'};
+
+async function fetchWeather(lat, lon){
+  try{
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m,weather_code`;
+    const res = await fetch(url); const data = await res.json();
+    const prevSky = $('skyVal').textContent;
+    state.weather = data.current;
+    $('tempVal').textContent = Math.round(state.weather.temperature_2m) + ' °C';
+    $('windVal').textContent = Math.round(state.weather.wind_speed_10m) + ' km/h';
+    $('skyVal').textContent = WEATHER_CODES[state.weather.weather_code] || 'UNKNOWN';
+    if(isSevereWeather()) wake('panel-tr', 8000);
+    else if(prevSky !== $('skyVal').textContent) wake('panel-tr', 4000);
+  }catch(e){ log('Weather sync failed.', 'err'); }
+}
+
+function initGeo(){
+  if(!navigator.geolocation){ log('Geolocation unavailable.', 'err'); return; }
+  navigator.geolocation.watchPosition(pos=>{
+    state.pos = pos; const c = pos.coords;
+    $('latVal').textContent = fmt(c.latitude);
+    $('lonVal').textContent = fmt(c.longitude);
+    updateActiveWaypointReadout();
+    fetchWeather(c.latitude, c.longitude);
+  }, err=>log('GPS error: ' + err.message, 'err'), { enableHighAccuracy:true, maximumAge:5000, timeout:15000 });
+}
+
+function haversine(lat1,lon1,lat2,lon2){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+function bearing(lat1,lon1,lat2,lon2){
+  const toRad=d=>d*Math.PI/180, toDeg=r=>r*180/Math.PI;
+  const y = Math.sin(toRad(lon2-lon1))*Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1))*Math.sin(toRad(lat2)) - Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(toRad(lon2-lon1));
+  return (toDeg(Math.atan2(y,x))+360)%360;
+}
+
+let lastWaypointDist = null;
+function setWaypoint(name){
+  if(!state.pos){ log('No GPS lock yet — cannot mark waypoint.', 'err'); speak('No G P S lock yet'); return; }
+  name = name || 'waypoint' + (Object.keys(state.waypoints).length+1);
+  state.waypoints[name] = { lat: state.pos.coords.latitude, lon: state.pos.coords.longitude };
+  state.activeWaypoint = name;
+  log('Waypoint "' + name + '" marked.', 'sys'); speak('Waypoint ' + name + ' marked');
+  wake('panel-bl', 6000);
+  updateActiveWaypointReadout();
+}
+
+function updateActiveWaypointReadout(){
+  if(!state.activeWaypoint || !state.pos) return;
+  const w = state.waypoints[state.activeWaypoint];
+  if(!w) return;
+  const d = haversine(state.pos.coords.latitude, state.pos.coords.longitude, w.lat, w.lon);
+  const b = bearing(state.pos.coords.latitude, state.pos.coords.longitude, w.lat, w.lon);
+  $('wptVal').textContent = state.activeWaypoint + ' · ' + Math.round(d) + 'm @ ' + Math.round(b) + '°';
+  $('hdgVal').textContent = Math.round(b) + '°';
+  if(lastWaypointDist == null || Math.abs(lastWaypointDist - d) > 15) wake('panel-bl', 6000);
+  lastWaypointDist = d;
+}
+
+function reportDistance(name){
+  const key = name && state.waypoints[name] ? name : state.activeWaypoint;
+  if(!key || !state.waypoints[key]){ log('No waypoint set.', 'err'); speak('No waypoint set'); return; }
+  if(!state.pos){ log('No GPS lock.', 'err'); return; }
+  const w = state.waypoints[key];
+  const d = haversine(state.pos.coords.latitude, state.pos.coords.longitude, w.lat, w.lon);
+  const b = bearing(state.pos.coords.latitude, state.pos.coords.longitude, w.lat, w.lon);
+  const msg = key + ' is ' + Math.round(d) + ' meters away, bearing ' + Math.round(b) + ' degrees.';
+  log(msg, 'sys'); speak(msg);
+}
+
+// ---- compass heading (device orientation) ----
+function initCompass(){
+  window.addEventListener('deviceorientationabsolute', onOrientation, true);
+  window.addEventListener('deviceorientation', onOrientation, true);
+}
+function onOrientation(e){
+  let heading = null;
+  if(e.webkitCompassHeading != null) heading = e.webkitCompassHeading;
+  else if(e.alpha != null) heading = 360 - e.alpha;
+  if(heading != null && !state.activeWaypoint){
+    $('hdgVal').textContent = Math.round(heading) + '°';
+  }
+}
+
+// ================= CLOCK =================
+function tickClock(){
+  const now = new Date();
+  $('clockVal').textContent = now.toLocaleTimeString('en-GB', {hour12:false});
+  $('dateVal').textContent = now.toISOString().slice(0,10).replace(/-/g,'.');
+}
+setInterval(tickClock, 1000); tickClock();
+
+// ================= MISSION TIMER =================
+function timerTick(){
+  if(!state.timer.running) return;
+  const now = Date.now();
+  if(state.timer.mode === 'countdown'){
+    const remaining = Math.max(0, state.timer.countdownTotal - (now - state.timer.startTs));
+    $('timerVal').textContent = fmtMs(remaining);
+    if(remaining <= 0){
+      state.timer.running = false;
+      log('Mission timer complete.', 'sys'); speak('Timer complete'); flashAlert('TIMER COMPLETE');
+    }
+  } else {
+    $('timerVal').textContent = fmtMs(now - state.timer.startTs);
+  }
+}
+setInterval(timerTick, 250);
+function fmtMs(ms){
+  const s = Math.ceil(ms/1000);
+  const m = Math.floor(Math.max(s,0)/60), sec = Math.max(s,0)%60;
+  return String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+}
+function startStopwatch(){ state.timer = {mode:'stopwatch', running:true, startTs:Date.now(), elapsed:0, countdownTotal:0}; log('Stopwatch started.', 'sys'); wake('panel-br', 4000); }
+function startCountdown(seconds){
+  state.timer = {mode:'countdown', running:true, startTs:Date.now(), elapsed:0, countdownTotal:seconds*1000};
+  log('Countdown set for ' + seconds + 's.', 'sys'); speak('Timer set for ' + seconds + ' seconds');
+  wake('panel-br', 4000);
+}
+function stopTimer(){ state.timer.running = false; log('Timer stopped.', 'sys'); wake('panel-br', 4000); }
+function resetTimer(){ state.timer = {mode:null, running:false, startTs:0, elapsed:0, countdownTotal:0}; $('timerVal').textContent='00:00'; log('Timer reset.', 'sys'); }
+
+// ================= MOTION / IMPACT ALERT =================
+let lastMotionTs = 0;
+function initMotion(){
+  window.addEventListener('devicemotion', e=>{
+    const a = e.accelerationIncludingGravity || e.acceleration;
+    if(!a || a.x==null) return;
+    const mag = Math.sqrt(a.x*a.x + a.y*a.y + a.z*a.z);
+    const now = Date.now();
+    if(mag > 28 && now - lastMotionTs > 2000){
+      lastMotionTs = now;
+      log('Impact / sharp motion detected.', 'err');
+      redAlert(4000);
+      wake('panel-br', 4000);
+    }
+  });
+}
+
+// ================= DIAGNOSTICS =================
+async function initDiagnostics(){
+  try{
+    if(navigator.getBattery){
+      const b = await navigator.getBattery();
+      let warned = false;
+      const upd = ()=>{
+        $('battVal').textContent = Math.round(b.level*100) + (b.charging?'% ⚡':'%');
+        if(b.level*100 <= 20 && !b.charging){
+          wake('panel-br', 6000);
+          if(!warned){ warned = true; const m = pick(LINES.lowBattery); log(m,'err'); speak(m); }
+        } else { warned = false; }
+      };
+      upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd);
+    } else { $('battVal').textContent = 'N/A'; }
+  }catch(e){ $('battVal').textContent = 'N/A'; }
+  function updNet(first){
+    const conn = navigator.connection;
+    const wasOnline = $('netVal').textContent !== 'OFFLINE';
+    $('netVal').textContent = (navigator.onLine ? (conn && conn.effectiveType ? conn.effectiveType.toUpperCase() : 'ONLINE') : 'OFFLINE');
+    if(!first){
+      wake('panel-br', 4000);
+      if(navigator.onLine && !wasOnline){ const m=pick(LINES.netBack); log(m,'sys'); speak(m); }
+      else if(!navigator.onLine && wasOnline){ const m=pick(LINES.netLost); log(m,'err'); speak(m); }
+    }
+  }
+  updNet(true);
+  window.addEventListener('online', ()=>updNet()); window.addEventListener('offline', ()=>updNet());
+}
+
+// ================= OBJECT DETECTION =================
+let cocoModel = null;
+async function initDetection(){
+  try{
+    log('Loading vision model…', 'sys');
+    cocoModel = await cocoSsd.load({ base:'lite_mobilenet_v2' });
+    log('Object recognition online.', 'sys');
+    detectLoop();
+  }catch(e){ log('Object detection failed to load: ' + e.message, 'err'); }
+}
+async function detectLoop(){
+  if(cocoModel && video.readyState >= 2){
+    try{
+      const preds = await cocoModel.detect(video);
+      // map predictions into cropped-source space if zoomed digitally
+      const c = state.cover;
+      state.detections = preds.filter(p=>{
+        const [x,y,w,h] = p.bbox;
+        return x+w > c.sx && x < c.sx+c.sw && y+h > c.sy && y < c.sy+c.sh;
+      });
+      if(state.lockedClass){
+        const match = state.detections.find(d=>d.class === state.lockedClass);
+        state.lockedBox = match || null;
+      }
+    }catch(e){ /* transient */ }
+  }
+  setTimeout(detectLoop, 450);
+}
+function describeScene(){
+  if(!state.detections.length){ log('No objects currently identified.', 'sys'); speak('Nothing identified right now'); return; }
+  const counts = {};
+  state.detections.forEach(d=>{ counts[d.class] = (counts[d.class]||0)+1; });
+  const parts = Object.entries(counts).map(([k,v])=> v>1 ? `${v} ${k}s` : `a ${k}`);
+  const msg = 'I see ' + parts.join(', ') + '.';
+  log(msg, 'sys'); speak(msg);
+}
+function lockOnto(name){
+  if(!name){ state.lockedClass = null; state.lockedBox = null; state.knownTag = null; log('Target lock released.', 'sys'); wake('panel-bc', 3000); return; }
+  const match = state.detections.find(d=> d.class.includes(name) || name.includes(d.class));
+  if(match){
+    state.lockedClass = match.class; state.lockedBox = match;
+    $('lockVal').textContent = match.class.toUpperCase();
+    log('Locked onto ' + match.class + '.', 'sys'); speak('Target locked, ' + match.class);
+    wake('panel-bc', 6000);
+  } else {
+    log('No matching object in view for "' + name + '".', 'err'); speak('Target not found');
+  }
+}
+function tagTarget(name){
+  if(!state.lockedClass){ log('Lock onto something first, then tag it.', 'err'); speak('Nothing locked to tag'); return; }
+  if(!name){ log('Say a name to tag it with.', 'err'); return; }
+  state.knownTag = { class: state.lockedClass, name };
+  log('Tagged locked ' + state.lockedClass + ' as "' + name + '".', 'sys');
+  speak('Got it, tagging as ' + name);
+  wake('panel-bc', 6000);
+}
+setInterval(()=>{ $('lockVal').textContent = state.lockedClass ? state.lockedClass.toUpperCase() : 'none'; }, 500);
+
+// ================= ASTRO MODE (offline sun/moon math, online ISS) =================
+function julianDate(d){ return d.getTime()/86400000 + 2440587.5; }
+function sunPosition(lat, lon, date){
+  // Standard low-precision solar position (NOAA-style approximation) — good enough for a HUD, not for navigation.
+  const rad = Math.PI/180;
+  const jd = julianDate(date);
+  const n = jd - 2451545.0;
+  const L = (280.460 + 0.9856474*n) % 360;
+  const g = ((357.528 + 0.9856003*n) % 360) * rad;
+  const lambda = (L + 1.915*Math.sin(g) + 0.020*Math.sin(2*g)) * rad;
+  const epsilon = 23.439 * rad;
+  const decl = Math.asin(Math.sin(epsilon)*Math.sin(lambda));
+  const raRaw = Math.atan2(Math.cos(epsilon)*Math.sin(lambda), Math.cos(lambda));
+  const gst = (280.46061837 + 360.98564736629*n) % 360;
+  const lst = (gst + lon) * rad;
+  let hourAngle = lst - raRaw;
+  while(hourAngle > Math.PI) hourAngle -= 2*Math.PI;
+  while(hourAngle < -Math.PI) hourAngle += 2*Math.PI;
+  const latR = lat*rad;
+  const alt = Math.asin(Math.sin(latR)*Math.sin(decl) + Math.cos(latR)*Math.cos(decl)*Math.cos(hourAngle));
+  let az = Math.atan2(-Math.sin(hourAngle), Math.tan(decl)*Math.cos(latR) - Math.sin(latR)*Math.cos(hourAngle));
+  az = (az/rad + 360) % 360;
+  return { altitude: alt/rad, azimuth: az };
+}
+function moonPhase(date){
+  // Days since a known new moon, mod synodic month. Approximate but stable.
+  const known = Date.UTC(2000,0,6,18,14,0);
+  const synodic = 29.530588853;
+  const days = (date.getTime() - known) / 86400000;
+  const phase = ((days % synodic) + synodic) % synodic;
+  const pct = phase / synodic;
+  const names = ['NEW','WAXING CRESCENT','FIRST QUARTER','WAXING GIBBOUS','FULL','WANING GIBBOUS','LAST QUARTER','WANING CRESCENT'];
+  const idx = Math.round(pct*8) % 8;
+  return { name: names[idx], illum: Math.round((1-Math.cos(pct*2*Math.PI))/2*100) };
+}
+function updateAstro(){
+  if(!state.astro) return;
+  const now = new Date();
+  if(state.pos){
+    const s = sunPosition(state.pos.coords.latitude, state.pos.coords.longitude, now);
+    $('sunVal').textContent = (s.altitude>=0?'UP ':'DOWN ') + Math.round(s.altitude) + '° alt · ' + Math.round(s.azimuth) + '° az';
+  }
+  const m = moonPhase(now);
+  $('moonVal').textContent = m.name + ' · ' + m.illum + '% lit';
+}
+let astroTicker = null;
+async function fetchISS(){
+  if(!state.astro || !navigator.onLine) return;
+  try{
+    const res = await fetch('https://api.wheretheiss.at/v1/satellites/25544');
+    const d = await res.json();
+    let extra = '';
+    if(state.pos){
+      const dist = haversine(state.pos.coords.latitude, state.pos.coords.longitude, d.latitude, d.longitude)/1000;
+      extra = ' · ' + Math.round(dist) + 'km away';
+    }
+    $('issVal').textContent = d.latitude.toFixed(1) + ',' + d.longitude.toFixed(1) + ' @ ' + Math.round(d.altitude) + 'km' + extra;
+  }catch(e){ $('issVal').textContent = 'no signal'; }
+}
+function toggleAstro(force){
+  state.astro = force !== undefined ? force : !state.astro;
+  $('panel-astro').style.display = state.astro ? '' : 'none';
+  if(state.astro){
+    wake('panel-astro', 999999); // stays lit while astro mode is on, no point dimming your own requested readout
+    log('Astro mode engaged.', 'sys'); speak('Astro mode engaged');
+    updateAstro(); fetchISS();
+    astroTicker = setInterval(()=>{ updateAstro(); }, 5000);
+    state.issTimer = setInterval(fetchISS, 15000);
+  } else {
+    log('Astro mode disengaged.', 'sys'); speak('Astro mode off');
+    clearInterval(astroTicker); clearInterval(state.issTimer);
+  }
+}
+
+// ================= DEEP ANALYSIS (online, graceful offline/no-key fallback) =================
+async function deepAnalysis(){
+  if(!navigator.onLine || !AI_CONFIG.endpoint || !AI_CONFIG.apiKey){
+    const m = pick(LINES.noAI);
+    log(m, 'err'); speak(m);
+    describeScene();
+    return;
+  }
+  log('Requesting deep analysis…', 'sys');
+  try{
+    const res = await fetch(AI_CONFIG.endpoint, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + AI_CONFIG.apiKey },
+      body: JSON.stringify({ detections: state.detections.map(d=>d.class), context:'rooftop patrol HUD scene analysis' })
+    });
+    const data = await res.json();
+    const msg = (data && data.summary) ? data.summary : 'Analysis returned no summary.';
+    log(msg, 'sys'); speak(msg);
+  }catch(e){ log('Deep analysis request failed: ' + e.message, 'err'); describeScene(); }
+}
+
+// ================= QUIET AMBIENT TAGGING (tag new objects once, no spam) =================
+function ambientTag(){
+  const now = Date.now();
+  const present = new Set(state.detections.map(d=>d.class));
+  present.forEach(cls=>{
+    const last = state.seenClasses[cls] || 0;
+    if(now - last > 12000){ // hasn't been logged recently → treat as a fresh contact
+      const m = pick(LINES.newContact(cls));
+      log(m, 'sys');
+    }
+    state.seenClasses[cls] = now;
+  });
+}
+setInterval(ambientTag, 1500);
+
+// ================= DAILY BRIEFING ON OPEN =================
+function scheduleBriefing(){
+  if(state.briefed) return;
+  setTimeout(()=>{
+    if(state.briefed) return;
+    state.briefed = true;
+    const now = new Date();
+    const hour = now.getHours();
+    const part = hour<12?'morning':hour<18?'afternoon':'evening';
+    let line = `Good ${part}. `;
+    if(state.weather) line += `${Math.round(state.weather.temperature_2m)} degrees, ${($('skyVal').textContent||'').toLowerCase()}. `;
+    if(isLowBattery()) line += `Battery's a bit low. `;
+    log(line.trim(), 'sys'); speak(line.trim());
+  }, 3500); // give GPS/weather a moment to land first
+}
+
+// ================= HAND GESTURE =================
+function initHandTracking(){
+  if(typeof Hands === 'undefined'){ log('Hand tracking module unavailable.', 'err'); return; }
+  const hands = new Hands({ locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+  hands.setOptions({ maxNumHands:1, modelComplexity:0, minDetectionConfidence:0.6, minTrackingConfidence:0.5 });
+  hands.onResults(res=>{
+    if(!res.multiHandLandmarks || !res.multiHandLandmarks.length) return;
+    const tip = res.multiHandLandmarks[0][8];
+    const now = Date.now();
+    if(tip.y < 0.25 && now - state.lastGesture > state.gestureCooldownMs){
+      state.lastGesture = now;
+      setMode(state.mode === 'scan' ? 'patrol' : 'scan');
+      log('Gesture: hand raised → mode shift.', 'sys');
+    }
+  });
+  (async function loop(){ if(video.readyState>=2) await hands.send({image:video}); requestAnimationFrame(loop); })();
+}
+
+function setMode(m){
+  state.mode = m;
+  $('modeText').textContent = m === 'scan' ? 'SCAN MODE' : 'PATROL MODE';
+  speak(m === 'scan' ? 'Scan mode engaged' : 'Patrol mode restored');
+}
+function toggleStealth(force){
+  state.stealth = force !== undefined ? force : !state.stealth;
+  $('hudLayer').classList.toggle('blackout', state.stealth);
+  log('Stealth ' + (state.stealth?'ENGAGED':'DISENGAGED'), 'sys');
+  speak(state.stealth ? 'Stealth engaged' : 'Stealth disengaged');
+  if(!redAlertTimeout) applyTheme(state.stealth ? 'green' : 'blue');
+}
+
+// ================= CAPTURE / RECORD =================
+function capturePhoto(){
+  hud.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'nw-capture-' + Date.now() + '.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    log('Snapshot saved.', 'sys'); speak('Snapshot captured');
+    const f = $('flash'); f.classList.add('on'); setTimeout(()=>f.classList.remove('on'), 120);
+  }, 'image/png');
+}
+function startRecording(){
+  if(state.recording) return;
+  try{
+    const stream = hud.captureStream(30);
+    state.chunks = [];
+    state.recorder = new MediaRecorder(stream, { mimeType:'video/webm;codecs=vp9' });
+    state.recorder.ondataavailable = e=>{ if(e.data.size) state.chunks.push(e.data); };
+    state.recorder.onstop = ()=>{
+      const blob = new Blob(state.chunks, {type:'video/webm'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'nw-recording-' + Date.now() + '.webm';
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      log('Recording saved.', 'sys');
+    };
+    state.recorder.start();
+    state.recording = true; $('recDot').classList.add('on');
+    log('Recording started.', 'sys'); speak('Recording started');
+  }catch(e){ log('Recording failed: ' + e.message, 'err'); }
+}
+function stopRecording(){
+  if(!state.recording || !state.recorder) return;
+  state.recorder.stop(); state.recording = false; $('recDot').classList.remove('on');
+  speak('Recording stopped');
+}
+
+// ================= ADVANCED LOCAL NLU =================
+function levenshtein(a,b){
+  const m=a.length,n=b.length; const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
+  for(let i=0;i<=m;i++) dp[i][0]=i; for(let j=0;j<=n;j++) dp[0][j]=j;
+  for(let i=1;i<=m;i++) for(let j=1;j<=n;j++){
+    dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j-1],dp[i-1][j],dp[i][j-1]);
+  }
+  return dp[m][n];
+}
+function fuzzyIncludes(text, phrase){
+  if(text.includes(phrase)) return true;
+  const words = text.split(/\s+/);
+  const pWords = phrase.split(/\s+/);
+  if(pWords.length === 1){
+    return words.some(w=> levenshtein(w, phrase) <= Math.max(1, Math.floor(phrase.length*0.25)));
+  }
+  return false;
+}
+
+const NUM_WORDS = {one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+function extractNumber(text){
+  const m = text.match(/(\d+(\.\d+)?)/);
+  if(m) return parseFloat(m[1]);
+  for(const w in NUM_WORDS){ if(text.includes(w)) return NUM_WORDS[w]; }
+  return null;
+}
+function extractSeconds(text){
+  const n = extractNumber(text);
+  if(n == null) return null;
+  if(/minute/.test(text)) return n*60;
+  return n; // default seconds
+}
+function extractQuotedOrTail(text, afterPatterns){
+  for(const p of afterPatterns){
+    const m = text.match(p);
+    if(m && m[1]) return m[1].trim();
+  }
+  return null;
+}
+
+const INTENTS = [
+  { name:'zoom_set', test:t=> /zoom (?:to|in to|at)\s*\d/.test(t) || /zoom.*\d+\s*x/.test(t),
+    run:t=>{ const n = extractNumber(t); if(n!=null) setZoom(n); log('Zoom set to '+n+'x','sys'); } },
+  { name:'zoom_in', test:t=> fuzzyIncludes(t,'zoom in') || fuzzyIncludes(t,'closer') || fuzzyIncludes(t,'get closer'),
+    run:t=>zoomIn() },
+  { name:'zoom_out', test:t=> fuzzyIncludes(t,'zoom out') || fuzzyIncludes(t,'pull back') || fuzzyIncludes(t,'zoom wide') || fuzzyIncludes(t,'wider'),
+    run:t=>zoomOut() },
+  { name:'weather', test:t=> fuzzyIncludes(t,'weather') || fuzzyIncludes(t,'temperature') || fuzzyIncludes(t,'temp') || fuzzyIncludes(t,'how hot') || fuzzyIncludes(t,'how cold'),
+    run:()=>{ if(state.weather){ const m=`Temperature ${Math.round(state.weather.temperature_2m)} degrees, wind ${Math.round(state.weather.wind_speed_10m)} kilometers per hour.`; log(m,'sys'); speak(m);} else { log('Weather not yet available.','err'); } } },
+  { name:'gps', test:t=> fuzzyIncludes(t,'gps') || fuzzyIncludes(t,'location') || fuzzyIncludes(t,'coordinates') || fuzzyIncludes(t,'where am i') || fuzzyIncludes(t,'position'),
+    run:()=>{ if(state.pos){ const c=state.pos.coords; const m=`Latitude ${c.latitude.toFixed(4)}, longitude ${c.longitude.toFixed(4)}.`; log(m,'sys'); speak(m);} else { log('No GPS lock yet.','err'); } } },
+  { name:'scan_mode', test:t=> fuzzyIncludes(t,'scan mode') || fuzzyIncludes(t,'detective') || fuzzyIncludes(t,'analyze mode') || (fuzzyIncludes(t,'scan') && !fuzzyIncludes(t,'what')),
+    run:()=>setMode(state.mode==='scan'?'patrol':'scan') },
+  { name:'patrol_mode', test:t=> fuzzyIncludes(t,'patrol mode') || fuzzyIncludes(t,'normal mode') || fuzzyIncludes(t,'exit scan'),
+    run:()=>setMode('patrol') },
+  { name:'night_vision', test:t=> fuzzyIncludes(t,'night vision') || fuzzyIncludes(t,'low light') || fuzzyIncludes(t,'boost light') || fuzzyIncludes(t,'dark mode'),
+    run:()=>{ state.nightVision = !state.nightVision; state.nightAuto = false; log('Night vision ' + (state.nightVision?'ON':'OFF'),'sys'); speak(state.nightVision?'Night vision on':'Night vision off'); } },
+  { name:'torch', test:t=> fuzzyIncludes(t,'torch') || fuzzyIncludes(t,'flashlight') || fuzzyIncludes(t,'light') || fuzzyIncludes(t,'flash'),
+    run:()=>toggleTorch() },
+  { name:'stealth', test:t=> fuzzyIncludes(t,'stealth') || fuzzyIncludes(t,'blackout') || fuzzyIncludes(t,'go dark') || fuzzyIncludes(t,'hide hud'),
+    run:()=>toggleStealth() },
+  { name:'lights_on', test:t=> fuzzyIncludes(t,'lights on') || fuzzyIncludes(t,'unstealth') || fuzzyIncludes(t,'show hud'),
+    run:()=>toggleStealth(false) },
+  { name:'mark_waypoint', test:t=> fuzzyIncludes(t,'mark') || fuzzyIncludes(t,'waypoint') || fuzzyIncludes(t,'drop pin') || fuzzyIncludes(t,'set home') || fuzzyIncludes(t,'remember this'),
+    run:t=>{ let name = extractQuotedOrTail(t, [/mark(?:ed)? (?:this|the)? ?(?:spot|location)? ?as (.+)/, /set waypoint (.+)/, /waypoint (.+)/]);
+      if(/home/.test(t) && !name) name='home';
+      setWaypoint(name); } },
+  { name:'distance', test:t=> fuzzyIncludes(t,'distance') || fuzzyIncludes(t,'how far') || fuzzyIncludes(t,'bearing'),
+    run:t=>{ const name = extractQuotedOrTail(t, [/to (.+)/]); reportDistance(name); } },
+  { name:'start_stopwatch', test:t=> fuzzyIncludes(t,'start stopwatch') || fuzzyIncludes(t,'stopwatch') || (fuzzyIncludes(t,'start timer') && !/\d/.test(t)),
+    run:()=>startStopwatch() },
+  { name:'start_countdown', test:t=> (fuzzyIncludes(t,'timer') || fuzzyIncludes(t,'countdown')) && /\d|one|two|three|four|five|six|seven|eight|nine|ten/.test(t),
+    run:t=>{ const s = extractSeconds(t); if(s!=null) startCountdown(s); } },
+  { name:'stop_timer', test:t=> fuzzyIncludes(t,'stop timer') || fuzzyIncludes(t,'pause timer') || fuzzyIncludes(t,'stop clock'),
+    run:()=>stopTimer() },
+  { name:'reset_timer', test:t=> fuzzyIncludes(t,'reset timer') || fuzzyIncludes(t,'clear timer'),
+    run:()=>resetTimer() },
+  { name:'capture', test:t=> fuzzyIncludes(t,'capture') || fuzzyIncludes(t,'snapshot') || fuzzyIncludes(t,'take a photo') || fuzzyIncludes(t,'take a picture'),
+    run:()=>capturePhoto() },
+  { name:'record_start', test:t=> (fuzzyIncludes(t,'record') || fuzzyIncludes(t,'start recording')) && !fuzzyIncludes(t,'stop'),
+    run:()=>startRecording() },
+  { name:'record_stop', test:t=> fuzzyIncludes(t,'stop recording') || fuzzyIncludes(t,'end recording'),
+    run:()=>stopRecording() },
+  { name:'describe', test:t=> fuzzyIncludes(t,'what do you see') || fuzzyIncludes(t,'describe') || fuzzyIncludes(t,'identify') || fuzzyIncludes(t,'report objects') || fuzzyIncludes(t,'analyze scene'),
+    run:()=>describeScene() },
+  { name:'lock_on', test:t=> fuzzyIncludes(t,'lock on') || fuzzyIncludes(t,'lock onto') || fuzzyIncludes(t,'track the') || fuzzyIncludes(t,'follow the'),
+    run:t=>{ const name = extractQuotedOrTail(t, [/lock on(?:to)? (?:the |a |an )?(.+)/, /track the (.+)/, /follow the (.+)/]); lockOnto(name); } },
+  { name:'unlock', test:t=> fuzzyIncludes(t,'release lock') || fuzzyIncludes(t,'unlock') || fuzzyIncludes(t,'stop tracking'),
+    run:()=>lockOnto(null) },
+  { name:'diagnostics', test:t=> fuzzyIncludes(t,'diagnostics') || fuzzyIncludes(t,'battery') || fuzzyIncludes(t,'suit status') || fuzzyIncludes(t,'system status'),
+    run:()=>{ const b=$('battVal').textContent, n=$('netVal').textContent; wake('panel-br',5000); const m=`Battery ${b}, network ${n}.`; log(m,'sys'); speak(m); } },
+  { name:'astro_on', test:t=> fuzzyIncludes(t,'astro mode') || fuzzyIncludes(t,'sky mode') || fuzzyIncludes(t,'star mode'),
+    run:()=>toggleAstro(true) },
+  { name:'astro_off', test:t=> fuzzyIncludes(t,'exit astro') || fuzzyIncludes(t,'astro off') || fuzzyIncludes(t,'stop astro'),
+    run:()=>toggleAstro(false) },
+  { name:'tag_target', test:t=> fuzzyIncludes(t,'tag') && (fuzzyIncludes(t,'as') || fuzzyIncludes(t,'name')),
+    run:t=>{ const name = extractQuotedOrTail(t, [/tag (?:this|that|it|the \w+) as (.+)/, /tag (?:this|that|it) (.+)/, /name (?:this|that|it) (.+)/]); tagTarget(name); } },
+  { name:'red_alert', test:t=> fuzzyIncludes(t,'red alert') || fuzzyIncludes(t,'code red') || fuzzyIncludes(t,'alarm'),
+    run:()=>redAlert(6000) },
+  { name:'stand_down', test:t=> fuzzyIncludes(t,'stand down') || fuzzyIncludes(t,'all clear') || fuzzyIncludes(t,'cancel alert'),
+    run:()=>{ clearTimeout(redAlertTimeout); redAlertTimeout=null; applyTheme(state.stealth?'green':'blue'); log('Stand down.','sys'); speak('Standing down'); } },
+  { name:'deep_analysis', test:t=> fuzzyIncludes(t,'deep analysis') || fuzzyIncludes(t,'deep scan') || fuzzyIncludes(t,'ask ai') || fuzzyIncludes(t,'full analysis'),
+    run:()=>deepAnalysis() }
+];
+
+function closestSuggestion(text){
+  let best=null, bestScore=Infinity;
+  INTENTS.forEach(intent=>{
+    const key = intent.name.replace(/_/g,' ');
+    const d = levenshtein(text, key);
+    if(d < bestScore){ bestScore = d; best = key; }
+  });
+  return best;
+}
+
+function runClause(clause){
+  const t = clause.toLowerCase().trim();
+  if(!t) return;
+  for(const intent of INTENTS){
+    if(intent.test(t)){ intent.run(t); return; }
+  }
+  log('Command not recognized: "' + clause + '"', 'err');
+  const suggestion = closestSuggestion(t);
+  if(suggestion){ log('Did you mean: ' + suggestion + '?', 'err'); }
+  speak('Command not recognized');
+}
+
+function parseIntent(raw){
+  if(!raw || !raw.trim()) return;
+  log('> ' + raw);
+  const clauses = raw.split(/\band then\b|\bthen\b|\band\b|,|;/i).map(c=>c.trim()).filter(Boolean);
+  clauses.forEach(runClause);
+}
+
+// dock wiring
+$('sendBtn').addEventListener('click', ()=>{ const v=$('cmdInput').value; $('cmdInput').value=''; parseIntent(v); });
+$('cmdInput').addEventListener('keydown', e=>{ if(e.key==='Enter') $('sendBtn').click(); });
+document.querySelectorAll('.quick').forEach(q=>{
+  q.addEventListener('click', ()=>parseIntent(q.textContent));
+});
+
+let recognizer = null;
+function initSpeech(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ log('Speech recognition unsupported.', 'err'); return; }
+  recognizer = new SR();
+  recognizer.continuous = false; recognizer.interimResults = false; recognizer.lang = 'en-US';
+  recognizer.onresult = e=> parseIntent(e.results[0][0].transcript);
+  recognizer.onend = ()=>{ state.recognizing=false; $('micBtn').classList.remove('recording'); };
+  recognizer.onerror = e=>{ log('Voice error: ' + e.error, 'err'); state.recognizing=false; $('micBtn').classList.remove('recording'); };
+}
+$('micBtn').addEventListener('click', ()=>{
+  if(!recognizer){ log('Voice input unavailable.', 'err'); return; }
+  if(state.recognizing){ recognizer.stop(); return; }
+  state.recognizing = true; $('micBtn').classList.add('recording');
+  try{ recognizer.start(); }catch(e){}
+});
+
+// ================= BOOT =================
+async function boot(){
+  $('gateStatus').textContent = 'Requesting rear camera…';
+  const stream = await initCamera();
+  if(stream){
+    state.stream = stream; video.srcObject = stream; await video.play().catch(()=>{});
+    state.track = stream.getVideoTracks()[0];
+    const caps = state.track.getCapabilities ? state.track.getCapabilities() : {};
+    state.torchSupported = !!(caps && caps.torch);
+    if(caps && caps.zoom){ state.hwZoom = true; state.zoomCaps = caps.zoom; state.zoomMin = caps.zoom.min || 1; state.zoomMax = caps.zoom.max || 5; }
+    loopDraw();
+    initHandTracking();
+    initDetection();
+  }
+
+  $('gateStatus').textContent = 'Acquiring GPS lock…';
+  initGeo();
+
+  // iOS permission gates (must be inside a user gesture)
+  try{
+    if(typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission){
+      await DeviceOrientationEvent.requestPermission();
+    }
+  }catch(e){}
+  try{
+    if(typeof DeviceMotionEvent !== 'undefined' && DeviceMotionEvent.requestPermission){
+      await DeviceMotionEvent.requestPermission();
+    }
+  }catch(e){}
+  initCompass();
+  initMotion();
+  initDiagnostics();
+  initSpeech();
+
+  $('permGate').classList.add('hidden');
+  const bootLine = pick(LINES.boot);
+  log(bootLine, 'sys');
+  speak(bootLine);
+  scheduleBriefing();
+}
+
+$('initBtn').addEventListener('click', ()=>{ $('initBtn').disabled = true; boot(); });
+
+})();
+</script>
+</body>
+</html>
